@@ -5,7 +5,7 @@ run: a
 	./a
 
 fast: main.c
-	gcc -o a main.c -O2 -pthread -lm
+	gcc -o a main.c -O2 -pthread -lm -g
 
 debug: a
 	gdb a -r

@@ -9,6 +9,8 @@
 #define NTHREADS 1000
 #define PER_THREAD 100000
 
+#define PTR_SIZE sizeof(uintptr_t)
+
 typedef struct NumberRange {
     int start;
     int end;
@@ -21,92 +23,53 @@ NumberRange *NumberRange_init(int start, int end){
     return range;
 }
 
-// typedef struct ArrayList{
-//     int *list;
-//     size_t capacity;
-//     size_t size;
-//     pthread_mutex_t mutex;
-// } ArrayList;
+typedef struct LinkedNode{
+    int value;
+    struct LinkedNode *next;
+} LinkedNode;
 
-// ArrayList *ArrayList_init(int capacity){
-//     ArrayList *l = malloc(sizeof(ArrayList));
-//     l->list = calloc(capacity+1, sizeof(int));
-//     l->capacity = capacity;
-//     l->size = 0;
-//     l->mutex = (pthread_mutex_t) PTHREAD_MUTEX_INITIALIZER;
-//     return l;
-// }
+typedef struct LinkedList{
+    LinkedNode *head;
+    LinkedNode *tail;
+    pthread_mutex_t mutex;
+} LinkedList;
 
-// void ArrayList_add(ArrayList *list, int value){
-//     pthread_mutex_lock(&list->mutex);
-//     int s = list->size;
-//     int c = list->capacity;
-//     if(s >= c-1){
-//         c *= 2;
-//         list->list = (int *)realloc(list->list, list->capacity + 1);
-//     }
-//     ++s;
-//     int ns = list->size;
-//     int nc = list->capacity;
-//     *(list->list + list->size) = value;
-//     // list->list[list->size] = value;
-//     int n_s = list->size;
-//     int n_c = list->capacity;
-//     pthread_mutex_unlock(&list->mutex);
-// }
-
-// void ArrayList_add(ArrayList *list, int value){
-//     pthread_mutex_lock(&list->mutex);
-//     int s = list->size;
-//     int c = list->capacity;
-//     int *set = NULL;
-//     if(s >= c-1){
-//         c *= 2;
-//         set = (int *)realloc(list->list, c + 1);
-//     }
-//     ++s;
-//     list->size = s;
-//     list->capacity = c;
-//     (set?:list->list)[s] = value;
-//     pthread_mutex_unlock(&list->mutex);
-// }
-
-struct Iterator{
-    int curr;
-    int maxIndex;
-    int *list;
-};
-
-struct Iterator* ArrayList_getIterator(ArrayList *list){
-    struct Iterator *pt = malloc(sizeof(struct Iterator));
-    pt->curr = 0;
-    pt->maxIndex = list->size;
-    pt->list = list->list;
-    return pt;
+LinkedList *LinkedList_init(void){
+    LinkedList *l = malloc(sizeof(LinkedList));
+    l->head = l->tail = NULL;
+    l->mutex = (pthread_mutex_t) PTHREAD_MUTEX_INITIALIZER;
 }
 
-void Iterator_forEach(struct Iterator* iter, void (fun_ptr)(int)){
-    for(; iter->curr < iter->maxIndex; ++iter->curr)
-        (*fun_ptr)(iter->list[iter->curr]);
+void LinkedList_add(LinkedList *l, int value){
+    // fprintf(stderr, "%p, %d\n", l, value);
+    pthread_mutex_lock(&l->mutex);
+    LinkedNode *node = malloc(sizeof(LinkedNode));
+    node->value = value;
+    if(!l->head)
+        l->head = node;
+    if(l->tail)
+        l->tail->next = node;
+    l->tail = node;
+    pthread_mutex_unlock(&l->mutex);
 }
 
+// TODO: add Producer consumer
+// Search_range creates producer (or is producer) and consumer threads add values to the list
 
-// return range of primes with null terminator
-// void *search_range(NumberRange *range);
 void *search_range(void *arg){
-    ArrayList *list = *(ArrayList **)arg;
-    NumberRange *range = *(NumberRange **)(arg + sizeof(ArrayList *));
-    void *thread_id = (void *)(uintptr_t)(arg + sizeof(ArrayList *) * 2);
+    LinkedList *list = (LinkedList *)(*(uintptr_t *)arg);
+    // fprintf(stderr, "List: %p\n", arg);
+    NumberRange *range = *(NumberRange **)(arg + PTR_SIZE);
+    void *thread_id = (void *)(uintptr_t)(arg + PTR_SIZE * 2);
     for(int i = range->start; i < range->end; i++){
         for(int j = 2; j <= (int)sqrt(i); j++){
             if(i % j == 0)
                 goto NOT_PRIME;
         }
-        ArrayList_add(list, i);
+        LinkedList_add(list, i);
         NOT_PRIME:;
-        // sched_yield();
     }
-    return (void *)(uintptr_t)thread_id;
+    return thread_id;
     // refactor to ensure correct order of numbers
 }
 
@@ -117,14 +80,14 @@ void print(int n){
 int main(void){
     printf("Checking for primes from 1-%d\nUsing %d threads\n", NTHREADS*PER_THREAD, NTHREADS);
     pthread_t threads[NTHREADS];
-    ArrayList *primes = ArrayList_init(1000000);
+    LinkedList *primes = LinkedList_init();
     for(int i = 0; i < NTHREADS; i++){
         // Data packing :) :) 220 coming in clutch
-        void *arg = malloc(sizeof(ArrayList *) + sizeof(NumberRange *));
+        void *arg = malloc(PTR_SIZE * 2);
         *(uintptr_t *) arg = (uintptr_t) primes;
-        *(uintptr_t *) (arg+sizeof(ArrayList *)) = (uintptr_t) NumberRange_init(i*PER_THREAD?:2, (i+1)*PER_THREAD);
-        *(int *) (arg+sizeof(ArrayList *) * 2) = i;
-        // fprintf(stderr, "Thread %d created...\n", i);
+        *(uintptr_t *) (arg+PTR_SIZE) = (uintptr_t) NumberRange_init(i*PER_THREAD?:2, (i+1)*PER_THREAD);
+        *(int *) (arg+PTR_SIZE * 2) = i;
+        fprintf(stderr, "Thread %d created...\n", i);
         pthread_create(&threads[i], NULL, search_range, arg);
     }
     for(int i = 0; i < NTHREADS; i++){
@@ -138,10 +101,10 @@ int main(void){
 
     // write to file:
     FILE *fptr = fopen("out.txt", "w");
-    for(int i = 0; i < primes->size; i++){
-        int length = (int)(ceil(log10(primes->list[i])));
+    for(LinkedNode *node = primes->head; node; node = node->next){
+        int length = (int)(ceil(log10(node->value)));
         char *x = calloc(length + 2, sizeof(char));
-        sprintf(x, "%d", primes->list[i]);
+        sprintf(x, "%d", node->value);
         *(x+length) = '\n';
         fwrite(x, sizeof(char), length + 1, fptr);
     }
